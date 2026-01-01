@@ -5,6 +5,7 @@ import "vendor:raylib"
 
 print :: fmt.print;
 cos   :: math.cos;
+abs   :: math.abs;
 
 InitWindow :: raylib.InitWindow;
 CloseWindow :: raylib.CloseWindow;
@@ -18,11 +19,39 @@ GetFrameTime :: raylib.GetFrameTime;
 DrawText :: raylib.DrawText;
 TextFormat :: raylib.TextFormat;
 CheckCollisionPointRec :: raylib.CheckCollisionPointRec
+DrawLineEx :: raylib.DrawLineEx;
+SetTargetFPS :: raylib.SetTargetFPS;
+Vector2Add :: raylib.Vector2Add;
+Vector2Rotate :: raylib.Vector2Rotate;
+GetRandomValue :: raylib.GetRandomValue;
+IsKeyPressed :: raylib.IsKeyPressed;
+SetWindowSize :: raylib.SetWindowSize;
+SetWindowPosition :: raylib.SetWindowPosition
+GetCurrentMonitor :: raylib.GetCurrentMonitor
+GetMonitorHeight :: raylib.GetMonitorHeight
+GetMonitorWidth :: raylib.GetMonitorWidth
+
+KEY_D :: raylib.KeyboardKey.D;
+KEY_F :: raylib.KeyboardKey.F;
+KEY_EQUAL :: raylib.KeyboardKey.EQUAL;
+KEY_MINUS :: raylib.KeyboardKey.MINUS;
 
 Color :: raylib.Color;
 Vector2 :: raylib.Vector2;
 Rectangle :: raylib.Rectangle;
+
+WHITE :: Color {255,255,255,255};
+GRAY :: Color {100,100,100,255};
+DEG2RAD :: raylib.DEG2RAD;
+
 SNOWFLAKE_MAX_COUNT :: 256;
+SNOWFLAKE_THICKNESS_DECAY :: 1.5
+SNOWFLAKE_SIZE_DECAY      :: 2
+SNOWFLAKE_MAX_ALIVE_COUNT :: SNOWFLAKE_MAX_COUNT / 2
+SNOWFLAKE_SPAWN_CHANCE :: 10
+SNOWFLAKE_GRAVITY_VELOCITY :: 4
+SNOWFLAKE_WIND_LEFT_LIMIT :: -8
+SNOWFLAKE_WIND_RIGHT_LIMIT :: 8
 
 Entites :: [SNOWFLAKE_MAX_COUNT]Entity;
 Entity  :: struct {
@@ -43,19 +72,11 @@ WIND_COUNT :: 10;
 Context :: struct {
     ents_count: u32,
     ents:       Entites,
-    winds:      [WIND_COUNT]Vector2,
+    wind:       f32,
     bounds:     Rectangle
+
 }
 
-DrawLineEx :: raylib.DrawLineEx;
-SetTargetFPS :: raylib.SetTargetFPS;
-Vector2Add :: raylib.Vector2Add;
-Vector2Rotate :: raylib.Vector2Rotate;
-WHITE :: Color {255,255,255,255};
-DEG2RAD :: raylib.DEG2RAD;
-
-SNOWFLAKE_THICKNESS_DECAY :: 1.5
-SNOWFLAKE_SIZE_DECAY      :: 2
 
 draw_flake :: proc(anchor: Vector2, 
     count: i32, 
@@ -93,11 +114,6 @@ draw_snowflake :: proc (e: Entity) {
     draw_flake(e.pos, branches, splits, size, cast(i32) thick, e.rotation)
 }
 
-SNOWFLAKE_MAX_ALIVE_COUNT :: SNOWFLAKE_MAX_COUNT / 2
-
-SNOWFLAKE_SPAWN_CHANCE :: 10
-GetRandomValue :: raylib.GetRandomValue
-
 spawn_random_snowflake :: proc(ctx: ^Context) {
     
     // break early if cannot spawn
@@ -122,10 +138,18 @@ spawn_random_snowflake :: proc(ctx: ^Context) {
         }
     }
 
+    if (snowflake.data.splits == 1) {
+        length := cast(f32) snowflake.data.branch_length
+        length *= 0.75
+        snowflake.data.branch_length = cast(i32) length
+    } 
+
+    // make sure it rotates
     if  0.5 > abs(snowflake.angular_velocity) {
         snowflake.angular_velocity = 1
     }
 
+    // put it somewhere in empty slot
     for &ent in ctx.ents {
         if !ent.used {
             ent = snowflake
@@ -134,7 +158,6 @@ spawn_random_snowflake :: proc(ctx: ^Context) {
     }
 }
 
-SNOWFLAKE_GRAVITY_VELOCITY :: 4
 
 get_bounds :: proc() -> Rectangle {
     r := Rectangle {
@@ -148,11 +171,31 @@ snowflake_despawn :: proc(e: ^Entity) {
     e^ = Entity {}
 }
 
+random_float :: proc () -> f32 {
+    di := cast(f32) GetRandomValue(-(1<<30), 1<<30)
+    de := cast(f32)(1 << 30)
+    if di == 0 { di = 1 }
+    if de == 0 { de = 1 }
+    return  di / de;
+}
+
+SNOWFLAKE_WIND_STRENGTH :: 1.0/20.0
+
 update :: proc(ctx: ^Context) {
     ctx.ents_count = 0;
     ctx.bounds = get_bounds()
 
     spawn_random_snowflake(ctx)
+
+    // change base velocity to simulate "wind"
+    // keep in LEFT to RIGHT limit range
+    wind := random_float() * SNOWFLAKE_WIND_STRENGTH
+    if wind < SNOWFLAKE_WIND_LEFT_LIMIT {
+        wind = abs(wind)
+    } else if wind > SNOWFLAKE_WIND_RIGHT_LIMIT  {
+        wind = -abs(wind) 
+    }
+    ctx.wind += wind
 
     for &ent in ctx.ents {
         if !ent.used { continue }
@@ -163,7 +206,12 @@ update :: proc(ctx: ^Context) {
         ent.time_alive += GetFrameTime()
         ent.rotation   += ent.angular_velocity
         ctx.ents_count += 1
-        ent.pos = Vector2Add(ent.pos, Vector2 { cos(ent.time_alive), SNOWFLAKE_GRAVITY_VELOCITY})
+        ent.pos = Vector2Add(ent.pos, 
+            Vector2 { 
+                ctx.wind + cos(ent.time_alive), // x
+                SNOWFLAKE_GRAVITY_VELOCITY
+            }
+        )
     }
 }
 
@@ -176,20 +224,87 @@ draw :: proc(ctx: Context) {
 
 main :: proc() {
 
-    SetTargetFPS(60);
-    InitWindow(800,600, "Snowflakes");
+    debug := false
+    borderless_fullscreen := false
+    font_size := cast(i32) 9
+    resolutions := []Vector2 { 
+        // x, y
+        {400, 300},
+        {500, 400},
+        {600, 360},
+        {800, 600},
+        {900, 450},
+        {1280,720},
+        {1440,900},
+        {1680,1050},
+        {1920,1080},
+        {2560,1440}
+    }
+    current_resolution := len(resolutions)/2
+    resolution := resolutions[current_resolution]
 
+    // window init
+    SetTargetFPS(60);
+    InitWindow(auto_cast resolution.x,auto_cast resolution.y, "Snowflakes");
+
+    // ctx needs to created after the window
+    // since get_bounds needs window context to get resolution
     ctx := Context {
         bounds = get_bounds()
-    };
+    }
 
     for !WindowShouldClose() {
-        BeginDrawing();
-        ClearBackground(Color { 20,20,20,255 });
-        DrawText(TextFormat("%i", ctx.ents_count), 10, 10, 14, WHITE )
+        resize := false
+        BeginDrawing()
+        ClearBackground(Color { 20,20,20,255 })
+
+
+        if IsKeyPressed(KEY_D) { debug = !debug }
+        if IsKeyPressed(KEY_EQUAL) { 
+            if current_resolution < len(resolutions)-1 { 
+                current_resolution += 1
+            }
+            resize = true
+        }
+        if IsKeyPressed(KEY_F) {
+            resize = true
+            borderless_fullscreen = !borderless_fullscreen
+        }
+        if IsKeyPressed(KEY_MINUS) { 
+            if current_resolution > 0 {
+                current_resolution -= 1
+            }
+            resize = true
+        }
+
+        if debug {
+            DrawText(TextFormat("%i, %.2f", ctx.ents_count, ctx.wind), 
+                font_size, font_size, font_size, GRAY)
+        }
+
         update(&ctx);
         draw(ctx);
         EndDrawing();
+
+        if resize {
+            mon := GetCurrentMonitor()
+            screen := Vector2 {
+                auto_cast GetMonitorWidth(mon),
+                auto_cast GetMonitorHeight(mon)
+            }
+            if borderless_fullscreen {
+                SetWindowSize(auto_cast screen.x, auto_cast screen.y)
+                SetWindowPosition(0,0)
+            } else {
+                resolution = resolutions[current_resolution]
+                SetWindowSize(auto_cast resolution.x, auto_cast resolution.y)
+                
+                SetWindowPosition(
+                    auto_cast (screen.x - resolution.x)/2, 
+                    auto_cast (screen.y - resolution.y)/2
+                )
+            }
+        }     
     }
     CloseWindow();
 }
